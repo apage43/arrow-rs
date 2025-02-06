@@ -231,10 +231,12 @@ impl ObjectStore for AmazonS3 {
         location: &Path,
         opts: PutMultipartOpts,
     ) -> Result<Box<dyn MultipartUpload>> {
+        let mode = opts.mode.clone();
         let upload_id = self.client.create_multipart(location, opts).await?;
 
         Ok(Box::new(S3MultiPartUpload {
             part_idx: 0,
+            mode,
             state: Arc::new(UploadState {
                 client: Arc::clone(&self.client),
                 location: location.clone(),
@@ -381,6 +383,7 @@ impl ObjectStore for AmazonS3 {
 struct S3MultiPartUpload {
     part_idx: usize,
     state: Arc<UploadState>,
+    mode: PutMode,
 }
 
 #[derive(Debug)]
@@ -415,13 +418,19 @@ impl MultipartUpload for S3MultiPartUpload {
     async fn complete(&mut self) -> Result<PutResult> {
         let parts = self.state.parts.finish(self.part_idx)?;
 
+        let mode = match self.mode {
+            PutMode::Overwrite => CompleteMultipartMode::Overwrite,
+            PutMode::Create => CompleteMultipartMode::Create,
+            PutMode::Update(_) => return Err(Error::NotImplemented),
+        };
+
         self.state
             .client
             .complete_multipart(
                 &self.state.location,
                 &self.state.upload_id,
                 parts,
-                CompleteMultipartMode::Overwrite,
+                mode,
             )
             .await
     }
@@ -806,5 +815,43 @@ mod tests {
 
             store.delete(location).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_create() {
+        maybe_skip_integration!();
+
+        let store = AmazonS3Builder::from_env()
+            .with_checksum_algorithm(Checksum::SHA256)
+            .build()
+            .unwrap();
+
+        let path = Path::parse("test_multipart_create.bin").unwrap();
+
+        // First upload should succeed
+        let mut upload = store
+            .put_multipart_opts(&path, PutMode::Create.into())
+            .await
+            .unwrap();
+        upload
+            .put_part(PutPayload::from(vec![0u8; 10_000_000]))
+            .await
+            .unwrap();
+        upload.complete().await.unwrap();
+
+        // Second upload with Create mode should fail
+        let mut upload = store
+            .put_multipart_opts(&path, PutMode::Create.into())
+            .await
+            .unwrap();
+        upload
+            .put_part(PutPayload::from(vec![1u8; 10_000_000]))
+            .await
+            .unwrap();
+        let err = upload.complete().await.unwrap_err();
+        assert!(matches!(err, Error::AlreadyExists { .. }), "{}", err);
+
+        // Cleanup
+        store.delete(&path).await.unwrap();
     }
 }

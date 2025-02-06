@@ -1193,6 +1193,8 @@ impl From<Attributes> for PutOptions {
 /// Options for [`ObjectStore::put_multipart_opts`]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PutMultipartOpts {
+    /// Configure the [`PutMode`] for this operation
+    pub mode: PutMode,
     /// Provide a [`TagSet`] for this object
     ///
     /// Implementations that don't support object tagging should ignore this
@@ -1216,6 +1218,15 @@ impl From<Attributes> for PutMultipartOpts {
     fn from(attributes: Attributes) -> Self {
         Self {
             attributes,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<PutMode> for PutMultipartOpts {
+    fn from(mode: PutMode) -> Self {
+        Self {
+            mode,
             ..Default::default()
         }
     }
