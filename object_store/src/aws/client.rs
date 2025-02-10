@@ -52,7 +52,7 @@ use itertools::Itertools;
 use md5::{Digest, Md5};
 use percent_encoding::{utf8_percent_encode, PercentEncode};
 use quick_xml::events::{self as xml_events};
-use reqwest::{Client as ReqwestClient, Method, RequestBuilder, Response};
+use reqwest::{Client as ReqwestClient, Method, RequestBuilder, Response, StatusCode};
 use ring::digest;
 use ring::digest::Context;
 use serde::{Deserialize, Serialize};
@@ -772,9 +772,21 @@ impl S3Client {
             .retry_error_body(true)
             .send()
             .await
-            .map_err(|source| Error::CompleteMultipartRequest {
-                source,
-                path: location.as_ref().to_string(),
+            .map_err(|source| {
+                if source.status() == Some(StatusCode::PRECONDITION_FAILED)
+                    || source.status() == Some(StatusCode::NOT_MODIFIED)
+                {
+                    // Convert PutMode::Create related errors to AlreadyExists
+                    crate::Error::AlreadyExists {
+                        path: location.as_ref().to_string(),
+                        source: Box::new(source),
+                    }
+                } else {
+                    crate::Error::from(Error::CompleteMultipartRequest {
+                        source,
+                        path: location.as_ref().to_string(),
+                    })
+                }
             })?;
 
         let version = get_version(response.headers(), VERSION_HEADER)

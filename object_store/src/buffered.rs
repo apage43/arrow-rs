@@ -19,8 +19,8 @@
 
 use crate::path::Path;
 use crate::{
-    Attributes, ObjectMeta, ObjectStore, PutMultipartOpts, PutOptions, PutPayloadMut, TagSet,
-    WriteMultipart,
+    Attributes, ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayloadMut,
+    TagSet, WriteMultipart,
 };
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt};
@@ -222,6 +222,7 @@ pub struct BufWriter {
     max_concurrency: usize,
     attributes: Option<Attributes>,
     tags: Option<TagSet>,
+    mode: PutMode,
     state: BufWriterState,
     store: Arc<dyn ObjectStore>,
 }
@@ -259,6 +260,7 @@ impl BufWriter {
             max_concurrency: 8,
             attributes: None,
             tags: None,
+            mode: PutMode::Overwrite,
             state: BufWriterState::Buffer(path, PutPayloadMut::new()),
         }
     }
@@ -287,6 +289,11 @@ impl BufWriter {
             tags: Some(tags),
             ..self
         }
+    }
+
+    /// Set the [`PutMode`] for this writer
+    pub fn with_mode(self, mode: PutMode) -> Self {
+        Self { mode, ..self }
     }
 
     /// Write data to the writer in [`Bytes`].
@@ -325,6 +332,7 @@ impl BufWriter {
                         let opts = PutMultipartOpts {
                             attributes: self.attributes.take().unwrap_or_default(),
                             tags: self.tags.take().unwrap_or_default(),
+                            mode: self.mode.clone(),
                         };
                         let upload = self.store.put_multipart_opts(&path, opts).await?;
                         let mut chunked =
@@ -384,6 +392,7 @@ impl AsyncWrite for BufWriter {
                         let opts = PutMultipartOpts {
                             attributes: self.attributes.take().unwrap_or_default(),
                             tags: self.tags.take().unwrap_or_default(),
+                            mode: self.mode.clone(),
                         };
                         let store = Arc::clone(&self.store);
                         self.state = BufWriterState::Prepare(Box::pin(async move {

@@ -231,6 +231,7 @@ impl ObjectStore for AmazonS3 {
         location: &Path,
         opts: PutMultipartOpts,
     ) -> Result<Box<dyn MultipartUpload>> {
+        let mode = opts.mode.clone();
         let upload_id = self.client.create_multipart(location, opts).await?;
 
         Ok(Box::new(S3MultiPartUpload {
@@ -240,6 +241,7 @@ impl ObjectStore for AmazonS3 {
                 location: location.clone(),
                 upload_id: upload_id.clone(),
                 parts: Default::default(),
+                put_mode: mode,
             }),
         }))
     }
@@ -389,6 +391,7 @@ struct UploadState {
     location: Path,
     upload_id: String,
     client: Arc<S3Client>,
+    put_mode: PutMode,
 }
 
 #[async_trait]
@@ -415,14 +418,14 @@ impl MultipartUpload for S3MultiPartUpload {
     async fn complete(&mut self) -> Result<PutResult> {
         let parts = self.state.parts.finish(self.part_idx)?;
 
+        let mode = match self.state.put_mode {
+            PutMode::Create => CompleteMultipartMode::Create,
+            _ => CompleteMultipartMode::Overwrite,
+        };
+
         self.state
             .client
-            .complete_multipart(
-                &self.state.location,
-                &self.state.upload_id,
-                parts,
-                CompleteMultipartMode::Overwrite,
-            )
+            .complete_multipart(&self.state.location, &self.state.upload_id, parts, mode)
             .await
     }
 
@@ -806,5 +809,53 @@ mod tests {
 
             store.delete(location).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_multipart_create_mode() {
+        maybe_skip_integration!();
+
+        let store = AmazonS3Builder::from_env()
+            .with_conditional_put(S3ConditionalPut::ETagMatch)
+            .build()
+            .unwrap();
+
+        let location = Path::from("test_multipart_create");
+        let data = PutPayload::from(vec![0u8; 1024]);
+
+        // First upload should succeed
+        let mut upload = store
+            .put_multipart_opts(
+                &location,
+                PutMultipartOpts {
+                    mode: PutMode::Create,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        upload.put_part(data.clone()).await.unwrap();
+        upload.complete().await.unwrap();
+
+        // Second upload to same path should fail
+        let mut upload = store
+            .put_multipart_opts(
+                &location,
+                PutMultipartOpts {
+                    mode: PutMode::Create,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        upload.put_part(data.clone()).await.unwrap();
+        let expect_fail = upload.complete().await;
+        assert!(matches!(
+            expect_fail,
+            Err(crate::Error::AlreadyExists { .. })
+        ));
+
+        // Cleanup
+        store.delete(&location).await.unwrap();
     }
 }
